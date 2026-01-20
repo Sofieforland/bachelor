@@ -1,0 +1,18 @@
+# Data (lokalt)
+data/
+outputs/
+
+# Medical images
+*.nii
+*.nii.gz
+*.mha
+*.mhd
+*.nrrd
+*.dcm
+
+# Python
+__pycache__/
+*.pyc
+
+# macOS
+.DS_Store
