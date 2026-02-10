@@ -3,17 +3,17 @@ import os
 import json
 import pandas as pd
 from openai import OpenAI
+import time
+
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 IN_PATH = REPO_ROOT / "outputs" / "dataset_with_notes.csv"
 OUT_PATH = REPO_ROOT / "outputs" / "agent_outputs_openai.jsonl"
 
-# 1) OpenAI client
-# Sett miljøvariabel i terminalen først:
-# export OPENAI_API_KEY="din-nøkkel"
+
 client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
 
-# 2) Strict JSON schema for output
+# Strict JSON schema for output
 DECISION_SCHEMA = {
     "name": "csPCa_decision",
     "schema": {
@@ -104,7 +104,7 @@ def run_agent(role: str, panel: str, input_text: str, model: str = "gpt-5.2"):
 def main():
     df = pd.read_csv(IN_PATH)
 
-    # Start med få rader for å teste (du kan øke senere)
+    # Start med få rader for å teste (kan øke senere)
     df = df.head(10).copy()
 
     OUT_PATH.parent.mkdir(exist_ok=True)
@@ -121,10 +121,14 @@ def main():
                 gp_out.update({"case_ID": case_id, "role": "gp", "panel": panel, "label": label})
                 f.write(json.dumps(gp_out, ensure_ascii=False) + "\n")
 
+                time.sleep(25)
+
                 # Radiology
                 rad_out = run_agent("radiology", panel, row["input_text_radiology"])
                 rad_out.update({"case_ID": case_id, "role": "radiology", "panel": panel, "label": label})
                 f.write(json.dumps(rad_out, ensure_ascii=False) + "\n")
+
+                time.sleep(25)
 
     print("Saved:", OUT_PATH)
 
