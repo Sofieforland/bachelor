@@ -3,7 +3,7 @@ import pandas as pd
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
-# 1) Paths
+# Paths (hardkodet til meg, må endres)
 CLINICAL_PATH = Path(
     "/Users/sofieforland/Desktop/Bachelor/code/picai_labels/clinical_information/marksheet.csv"
 )
@@ -13,7 +13,7 @@ OUT_PATH = REPO_ROOT / "outputs" / "dataset_step1c.csv"
 print("CLINICAL_PATH:", CLINICAL_PATH)
 print("MANIFEST_PATH:", MANIFEST_PATH)
 
-# 2) Load data
+# Load data
 df = pd.read_csv(CLINICAL_PATH)
 df.columns = [c.strip() for c in df.columns]
 df = df.rename(columns={"patient_id": "patient_ID", "study_id": "study_ID"})
@@ -24,27 +24,25 @@ manifest.columns = [c.strip() for c in manifest.columns]
 print("Clinical rows:", len(df))
 print("Manifest rows:", len(manifest))
 
-# 3) Keep ONLY the first visit per patient (using mri_date)
-df["mri_date"] = pd.to_datetime(df["mri_date"], errors="coerce")
-df = df.sort_values(["patient_ID", "mri_date", "study_ID"])
-df_first = df.groupby("patient_ID", as_index=False).head(1).copy()
+# Keep ONLY the first visit per patient (using mri_date)
+df_all = df.copy()
+df_all["mri_date"] = pd.to_datetime(df_all["mri_date"], errors="coerce")
+df_sorted = df_all.sort_values(["patient_ID", "mri_date", "study_ID"])
+df_first = df_sorted.groupby("patient_ID", as_index=False).head(1).copy()
 
 print("\n--- FLOW COUNTS ---")
-print("Start (rows in clinical file):", len(df))
+print("Start (rows in clinical file):", len(df_all))
 print("After first-visit:", len(df_first))
-print("Excluded (multiple visits):", len(df) - len(df_first))
+print("Excluded (multiple visits):", len(df_all) - len(df_first))
 
-# -----------------------
-# 4) Apply clinical filters SEQUENTIALLY (for flowchart)
-# -----------------------
 
-# Step A) patient_age available
+#patient_age available
 step0 = df_first
 step1 = step0[step0["patient_age"].notna()].copy()
 print("\nAfter age filter:", len(step1))
 print("Excluded (missing patient_age):", len(step0) - len(step1))
 
-# Step B) biomarker rule:
+# biomarker rule:
 # (PSA & volume) OR (PSAd & (PSA OR volume))
 psa_ok = step1["psa"].notna()
 psad_ok = step1["psad"].notna()
@@ -58,26 +56,39 @@ step2 = step1[biomarker_ok].copy()
 print("\nAfter biomarker rule:", len(step2))
 print("Excluded (fails PSA/PSAd/volume rule):", len(step1) - len(step2))
 
-# Step C) Histopath IS NOT RP
-hist = step2["histopath_type"].astype(str).str.strip().str.upper()
-step3 = step2[hist.ne("RP")].copy()
-print("\nAfter histopath != RP:", len(step3))
-print("Excluded (histopath == RP):", len(step2) - len(step3))
+# Histopath IS NOT RP (and histopath must be available)
+hist_raw = step2["histopath_type"]
+hist = hist_raw.astype(str).str.strip().str.upper()
 
-# Dette er ditt filtrerte kliniske sett (samme logikk som før, bare sekvensielt)
+# ekstra statistikk for flow/rapport 
+is_missing = hist_raw.isna()
+is_rp = hist.eq("RP")
+
+print("\nHistopath breakdown:")
+print("  - missing histopath:", is_missing.sum())
+print("  - histopath == RP:", is_rp.sum())
+print("  - missing OR RP:", (is_missing | is_rp).sum())
+
+step3 = step2[hist_raw.notna() & hist.ne("RP")].copy()
+print("\nAfter histopath != RP (and not missing):", len(step3))
+print("Excluded (histopath missing or RP):", len(step2) - len(step3))
+
+
+
+# filtrerte kliniske sett
 df_filt = step3
 print("\nRows after clinical filters (total):", len(df_filt))
 
-# 5) Merge in image paths by patient_ID + study_ID
+# Merge in image paths by patient_ID + study_ID
 df_merged = df_filt.merge(manifest, on=["patient_ID", "study_ID"], how="inner")
 
-# ensure both modalities exist (should be true for your dataset)
+# ensure both modalities exist (should be true)
 df_merged = df_merged[df_merged["t2w_path"].notna() & df_merged["adc_path"].notna()].copy()
 
 print("\nAfter merging images:", len(df_merged))
 print("Excluded (missing images):", len(df_filt) - len(df_merged))
 
-# 6) Select exactly what the assignment asks for
+
 final_cols = [
     "patient_ID",
     "patient_age",
@@ -91,7 +102,7 @@ final_cols = [
 ]
 df_final = df_merged[final_cols].copy()
 
-# (valgfritt) klassefordeling til flowchart/sluttrapport
+# klasse fordeling
 print("\nClass distribution (case_csPCa):")
 print(df_final["case_csPCa"].value_counts(dropna=False))
 
