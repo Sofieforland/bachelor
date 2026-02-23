@@ -41,22 +41,25 @@ def build_gp_note(row) -> str:
     psa = fmt(row.get("psa"))
     volume = fmt(row.get("prostate_volume"))
     psad = fmt(row.get("psad"))
-    center = fmt(row.get("center"))
 
-    # PSAD tekstlogikk
+    # PSA density text logic
     if psad in ["NA", None, ""]:
-        psad_text = "PSA density not calculated"
+        psad_text = "PSA density has not been calculated."
     else:
-        psad_text = f"PSA density {psad} ng/mL/mL"
+        psad_text = f"The PSA density is {psad} ng/mL/mL."
+
+    # PSA logic (in case PSA is missing)
+    if psa in ["NA", None, ""]:
+        psa_text = "The PSA value is not provided."
+    else:
+        psa_text = f"The patient has a PSA level of {psa} ng/mL."
 
     return (
         f"Patient ID: {patient_id}. "
-        f"{age}-year-old male. First recorded visit at {center}. "
-        f"PSA {psa} ng/mL. Prostate volume {volume} mL. "
-        f"{psad_text}. "
-        f"No prior histopathology (not RP). "
-        f"No DRE or imaging findings described. "
-        f"No additional clinical symptoms documented.\n\n"
+        f"This is a {age}-year-old male presenting for his first recorded visit. "
+        f"{psa_text} "
+        f"The prostate volume is {volume} mL. "
+        f"{psad_text}\n\n"
         "As a general practitioner, decide whether this patient should be referred "
         "for further testing for clinically significant prostate cancer (csPCa). "
         "Return a YES or NO decision with associated probabilities."

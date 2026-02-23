@@ -4,23 +4,29 @@ from pathlib import Path
 
 import pandas as pd
 import torch
-from transformers import Qwen3VLForConditionalGeneration, AutoProcessor
+from transformers import AutoTokenizer, AutoModelForCausalLM
 
-MODEL_ID = "Qwen/Qwen3-VL-8B-Instruct"
+MODEL_ID = "meta-llama/Meta-Llama-3-8B-Instruct"
 
-BASE_DIR = BASE_DIR = Path.home() / "Bachelor" / "BachelorProject" / "bachelor" # hardcode- better: Path(__file__).resolve().parent.parent
+BASE_DIR = Path.home() / "Bachelor" / "BachelorProject" / "bachelor"
 IN_PATH = BASE_DIR / "outputs" / "dataset_with_notes.csv"
-OUT_CSV_PATH = BASE_DIR / "outputs" / "dataset_with_qwen_outputs.csv"
-OUT_JSON_PATH = BASE_DIR / "outputs" / "dataset_with_qwen_outputs.jsonl"
-N_ROWS = 3  # start small, increase once it works
+#OUT_CSV_PATH = BASE_DIR / "outputs" / "dataset_with_llama_outputs.csv"
+OUT_JSON_PATH = BASE_DIR / "outputs" / "dataset_with_llama_outputs.jsonl"
+N_ROWS = 1  # start small
 
-# ---- Load model + processor ----
-model = Qwen3VLForConditionalGeneration.from_pretrained(
+# ---- Load model + tokenizer ----
+tokenizer = AutoTokenizer.from_pretrained(MODEL_ID, use_fast=True)
+
+# Optional but often useful if tokenizer doesn't have pad token set
+if tokenizer.pad_token_id is None:
+    tokenizer.pad_token = tokenizer.eos_token
+
+model = AutoModelForCausalLM.from_pretrained(
     MODEL_ID,
     torch_dtype="auto",
     device_map="auto",
 )
-processor = AutoProcessor.from_pretrained(MODEL_ID)
+model.eval()
 
 DOCTORS_GP = {
     "doctor_1_cautious_gp": {
@@ -42,8 +48,6 @@ Read the note and respond in this format:
 3) Uncertainty / what's missing? (bullet list)
 4) Recommended next step (one clear recommendation)
 5) Finally on a SEPARATE LINE decide if the patient should be escalated: DECISION=<YES/NO> and P_YES=<0-1>
-Output MUST end with exactly one final line: DECISION=<YES/NO> P_YES=<0-1>
-Do not add anything after that line.
 
 NOTE:
 {note}
@@ -63,52 +67,53 @@ A) Final decision (one sentence)
 B) Plan (bullet list, max 5 bullets)
 C) Why (short, 3-6 sentences)
 D) If disagreement: how you weighted it (2-4 sentences)
-E) Finally on a SEPARATE LINE, output MUST end with exactly one final line: FINAL_DECISION=<YES/NO> and P_YES=<0-1>
-Do not add anything after that line
+E) Finally on a SEPARATE LINE: FINAL_DECISION=<YES/NO> and P_YES=<0-1>
 """
 
 
 def build_messages(system_prompt: str, user_text: str):
+    # For Llama-3 instruct, "system"+"user" chat messages are correct
     return [
-        {"role": "system", "content": [{"type": "text", "text": system_prompt}]},
-        {"role": "user", "content": [{"type": "text", "text": user_text}]},
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_text},
     ]
 
 
 @torch.inference_mode()
-def run_doctor(system_prompt: str, user_text: str, max_new_tokens: int = 512) -> str:
+def run_doctor(system_prompt: str, user_text: str, max_new_tokens: int = 256) -> str:
     messages = build_messages(system_prompt, user_text)
-    inputs = processor.apply_chat_template(
+
+    # FÅ et dict med input_ids/attention_mask
+    inputs = tokenizer.apply_chat_template(
         messages,
         tokenize=True,
         add_generation_prompt=True,
         return_dict=True,
         return_tensors="pt",
-    ).to(model.device)
+    )
+    inputs = {k: v.to(model.device) for k, v in inputs.items()}
 
-    generated_ids = model.generate(**inputs, max_new_tokens=max_new_tokens)
-    trimmed = generated_ids[:, inputs["input_ids"].shape[1]:]
-    text = processor.batch_decode(
-        trimmed,
-        skip_special_tokens=True,
-        clean_up_tokenization_spaces=False,
-    )[0].strip()
+    # Hvis du vil ha sampling (top_p/temperature), sett do_sample=True
+    generated = model.generate(
+        **inputs,
+        max_new_tokens=max_new_tokens,
+        do_sample=False,  # sett True hvis du vil bruke temperature/top_p
+        pad_token_id=tokenizer.eos_token_id,
+        eos_token_id=tokenizer.eos_token_id,
+    )
+
+    # Klipp bort prompten
+    prompt_len = inputs["input_ids"].shape[1]
+    trimmed = generated[:, prompt_len:]
+
+    text = tokenizer.decode(trimmed[0], skip_special_tokens=True).strip()
     return text
 
 
 def parse_decision_fields(text: str):
-    """
-    Extracts YES/NO + probability from either:
-      DECISION=YES
-      FINAL_DECISION=YES
-      P_YES=0.75
-    With or without angle brackets.
-    """
-
     decision = None
     p_yes = None
 
-    # Match DECISION=YES or FINAL_DECISION=YES
     m = re.search(
         r"\b(?:FINAL_DECISION|DECISION)\s*=\s*<?\s*(YES|NO)\s*>?",
         text,
@@ -117,7 +122,6 @@ def parse_decision_fields(text: str):
     if m:
         decision = m.group(1).upper()
 
-    # Match P_YES=0.75
     m2 = re.search(
         r"\bP_YES\s*=\s*<?\s*([01](?:\.\d+)?)\s*>?",
         text,
@@ -138,14 +142,14 @@ def run_panel_on_row(gp_note: str):
 
     for key in ["doctor_1_cautious_gp", "doctor_2_pragmatic_gp"]:
         user_text = DOCTOR_TASK.format(note=gp_note)
-        opinions[key] = run_doctor(DOCTORS_GP[key]["system"], user_text, max_new_tokens=512)
+        opinions[key] = run_doctor(DOCTORS_GP[key]["system"], user_text, max_new_tokens=256)
 
     compiled = ""
     for k, v in opinions.items():
         compiled += f"--- {k} ---\n{v}\n\n"
 
     chief_text = CHIEF_TASK.format(gp_note=gp_note, compiled=compiled)
-    chief = run_doctor(DOCTORS_GP["chief_physician_decider"]["system"], chief_text, max_new_tokens=512)
+    chief = run_doctor(DOCTORS_GP["chief_physician_decider"]["system"], chief_text, max_new_tokens=384)
 
     return opinions, chief
 
@@ -153,12 +157,10 @@ def run_panel_on_row(gp_note: str):
 def main():
     df = pd.read_csv(IN_PATH).head(N_ROWS).copy()
 
-    # Output columns (raw text)
     df["Doctor_Cautious"] = ""
     df["Doctor_Pragmatic"] = ""
     df["Chief_Output"] = ""
 
-    # Parsed fields for convenience
     df["Doctor_Cautious_DECISION"] = ""
     df["Doctor_Cautious_P_YES"] = ""
     df["Doctor_Pragmatic_DECISION"] = ""
@@ -198,32 +200,18 @@ def main():
                 "patient_ID": patient_id,
                 "gp_note": gp_note,
                 "doctors": {
-                    "cautious_gp": {
-                        "raw": cautious_text,
-                        "decision": c_dec,
-                        "p_yes": c_p,
-                    },
-                    "pragmatic_gp": {
-                        "raw": pragmatic_text,
-                        "decision": p_dec,
-                        "p_yes": p_p,
-                    },
+                    "cautious_gp": {"raw": cautious_text, "decision": c_dec, "p_yes": c_p},
+                    "pragmatic_gp": {"raw": pragmatic_text, "decision": p_dec, "p_yes": p_p},
                 },
-                "chief": {
-                    "raw": chief_text,
-                    "final_decision": ch_dec,
-                    "p_yes": ch_p,
-                },
+                "chief": {"raw": chief_text, "final_decision": ch_dec, "p_yes": ch_p},
             }
         )
 
         print(f"Done patient {patient_id} ({i+1}/{len(df)})")
 
-    # Save CSV
-    df.to_csv(OUT_CSV_PATH, index=False)
-    print("Saved CSV:", OUT_CSV_PATH)
+    #df.to_csv(OUT_CSV_PATH, index=False)
+    #print("Saved CSV:", OUT_CSV_PATH)
 
-    # Save JSON
     with open(OUT_JSON_PATH, "w", encoding="utf-8") as f:
         json.dump(json_rows, f, ensure_ascii=False, indent=2)
     print("Saved JSON:", OUT_JSON_PATH)

@@ -1,12 +1,13 @@
 from pathlib import Path
 import pandas as pd
+from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 # Paths (hardkodet til meg, må endres)
-CLINICAL_PATH = Path(
-    "/Users/sofieforland/Desktop/Bachelor/code/picai_labels/clinical_information/marksheet.csv"
-)
+
+BASE_DIR = Path(__file__).resolve().parent.parent
+CLINICAL_PATH = BASE_DIR / "code" / "marksheet.csv"
 MANIFEST_PATH = REPO_ROOT / "outputs" / "manifest_linked.csv"
 OUT_PATH = REPO_ROOT / "outputs" / "dataset_step1c.csv"
 

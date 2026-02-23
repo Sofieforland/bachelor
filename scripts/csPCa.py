@@ -4,9 +4,10 @@ import numpy as np
 # -----------------------------
 # Config
 # ----------------------------
-CSV_PATH = "../outputs/dataset_step1c.csv"
+from pathlib import Path
 
-
+BASE_DIR = Path(__file__).resolve().parent.parent
+CSV_PATH = BASE_DIR / "outputs" / "dataset_step1c.csv"
 
 # Expected columns (your file should have these based on your pipeline)
 COL_AGE = "patient_age"
