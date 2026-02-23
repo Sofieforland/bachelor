@@ -1,3 +1,6 @@
+#from schema import validate_prediction  # Til selve ai bruk
+
+
 from pathlib import Path
 import os
 import json
@@ -9,6 +12,8 @@ import time
 REPO_ROOT = Path(__file__).resolve().parents[1]
 IN_PATH = REPO_ROOT / "outputs" / "dataset_with_notes.csv"
 OUT_PATH = REPO_ROOT / "outputs" / "agent_outputs_openai.jsonl"
+#CONFIG_PATH = REPO_ROOT / "configs" / "run_config.json"     #Prøver å teste
+#SELECTED_CASES_PATH = REPO_ROOT / "configs" / "selected_cases.txt"
 
 
 client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
@@ -69,6 +74,24 @@ SYSTEM_PROMPTS = {
         "Use only evidence present."
     ),
 }
+
+# Legger til her, usikker på om de skal brukes
+
+# def load_run_config() -> dict:
+#     with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+#         return json.load(f)
+
+# def load_selected_case_ids() -> list[str]:
+#     if not SELECTED_CASES_PATH.exists():
+#         return []
+#     ids = []
+#     with open(SELECTED_CASES_PATH, "r", encoding="utf-8") as f:
+#         for line in f:
+#             line = line.strip()
+#             if not line or line.startswith("#"):
+#                 continue
+#             ids.append(line)
+#     return ids
 
 def run_agent(role: str, panel: str, input_text: str, model: str = "gpt-5.2"):
     system = SYSTEM_PROMPTS[(role, panel)]

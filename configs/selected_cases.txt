@@ -1,0 +1,1 @@
+# legg inn 4 patient_ID her senere, én per linje
