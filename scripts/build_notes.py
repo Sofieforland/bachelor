@@ -34,21 +34,36 @@ def normalize_label(val):
     except:
         raise ValueError(f"Ukjent case_csPCa-verdi: {val}")
 
+
 def build_gp_note(row) -> str:
+    patient_id = fmt(row.get("patient_ID"))
+    age = fmt(row.get("patient_age"))
+    psa = fmt(row.get("psa"))
+    volume = fmt(row.get("prostate_volume"))
+    psad = fmt(row.get("psad"))
+    center = fmt(row.get("center"))
+
+    # PSAD tekstlogikk
+    if psad in ["NA", None, ""]:
+        psad_text = "PSA density not calculated"
+    else:
+        psad_text = f"PSA density {psad} ng/mL/mL"
+
     return (
-        f"Case ID: {fmt(row.get('patient_ID'))}\n"
-        f"Age: {fmt(row.get('patient_age'))}\n"
-        f"PSA: {fmt(row.get('psa'))} ng/mL\n"
-        f"Prostate volume: {fmt(row.get('prostate_volume'))} mL\n"
-        f"PSA density (PSAD): {fmt(row.get('psad'))} ng/mL/mL\n"
-        f"Center: {fmt(row.get('center'))}\n"
-        "Context: First recorded visit. Histopathology is not RP.\n"
-        "Task: As a general practitioner, decide if this patient should be referred for further testing for clinically significant prostate cancer (csPCa).\n"
-        "Return a YES/NO decision with probabilities.\n"
+        f"Patient ID: {patient_id}. "
+        f"{age}-year-old male. First recorded visit at {center}. "
+        f"PSA {psa} ng/mL. Prostate volume {volume} mL. "
+        f"{psad_text}. "
+        f"No prior histopathology (not RP). "
+        f"No DRE or imaging findings described. "
+        f"No additional clinical symptoms documented.\n\n"
+        "As a general practitioner, decide whether this patient should be referred "
+        "for further testing for clinically significant prostate cancer (csPCa). "
+        "Return a YES or NO decision with associated probabilities."
     )
 
+
 def build_radiology_note(row) -> str:
-    # Strukturer likt GP-notatet, så det er lett å sitere evidence_cited
     return (
         f"Case ID: {fmt(row.get('patient_ID'))}\n"
         f"Age: {fmt(row.get('patient_age'))}\n"
