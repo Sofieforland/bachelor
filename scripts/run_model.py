@@ -9,7 +9,8 @@ from bachelor.models.llama import LlamaClient
 from bachelor.models.medgemma import MedGemmaClient
 from bachelor.pipeline.runner import run_file
 
-BASE_DIR = Path.home() / "Bachelor" / "BachelorProject" / "bachelor"
+#BASE_DIR = Path.home() / "Bachelor" / "BachelorProject" / "bachelor"
+BASE_DIR = Path("/nfs/br1_student/sofiehf/bachelor")
 IN_PATH = BASE_DIR / "outputs" / "dataset_with_notes.csv"
 
 def main():
