@@ -1,6 +1,7 @@
 # scripts/run_model.py
 # kjør modell:
 # cd /nfs/br1_student/dorteej/Bachelor/BachelorProject python3 -m bachelor.scripts.run_model --model qwen --n_rows 1 --write_csv
+# sofie: python -m bachelor.scripts.run_model --model qwen --n_rows 4 --write_csv
 from pathlib import Path
 import argparse
 
@@ -8,6 +9,7 @@ from bachelor.models.qwen import QwenClient
 from bachelor.models.llama import LlamaClient
 from bachelor.models.medgemma import MedGemmaClient
 from bachelor.pipeline.runner import run_file
+
 
 #BASE_DIR = Path.home() / "Bachelor" / "BachelorProject" / "bachelor"
 BASE_DIR = Path("/nfs/br1_student/sofiehf/bachelor")
