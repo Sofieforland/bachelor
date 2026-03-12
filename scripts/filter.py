@@ -9,7 +9,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 BASE_DIR = Path(__file__).resolve().parent.parent
 CLINICAL_PATH = BASE_DIR / "code" / "marksheet.csv"
 MANIFEST_PATH = REPO_ROOT / "outputs" / "manifest_linked.csv"
-OUT_PATH = REPO_ROOT / "outputs" / "dataset_step1c.csv"
+OUT_PATH = REPO_ROOT / "outputs" / "filtered_pasients.csv"
 
 print("CLINICAL_PATH:", CLINICAL_PATH)
 print("MANIFEST_PATH:", MANIFEST_PATH)
