@@ -11,14 +11,14 @@ from bachelor.models.medgemma import MedGemmaClient
 from bachelor.pipeline.runner import run_file
 
 
-#BASE_DIR = Path.home() / "Bachelor" / "BachelorProject" / "bachelor"
-BASE_DIR = Path("/nfs/br1_student/sofiehf/bachelor")
+BASE_DIR = Path.home() / "Bachelor" / "BachelorProject" / "bachelor"
+#BASE_DIR = Path("/nfs/br1_student/sofiehf/bachelor")
 IN_PATH = BASE_DIR / "outputs" / "dataset_with_notes.csv"
 
 def main():
     parser = argparse.ArgumentParser(description="Run MDT panel on dataset")
     parser.add_argument("--model", choices=["qwen", "llama", "medgemma"], required=True)
-    parser.add_argument("--n_rows", type=int, default=3, help="How many rows to run (default 3)")
+    parser.add_argument("--n_rows", type=int, default=None, help="How many rows to run (default: all)")
     parser.add_argument("--write_csv", action="store_true", help="Also write CSV output")
     parser.add_argument("--append", action="store_true", help="Append to JSONL instead of overwriting")
     args = parser.parse_args()
