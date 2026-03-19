@@ -1,6 +1,6 @@
 # Data (lokalt)
 data/
-#outputs/
+outputs/
 
 # Medical images
 *.nii

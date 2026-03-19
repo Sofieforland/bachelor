@@ -11,7 +11,7 @@ from bachelor.models.base import ModelClient
 def run_panel_on_row(model: ModelClient, gp_note: str):
     opinions = {}
 
-    for key in ["doctor_2_pragmatic_gp"]: #"doctor_1_cautious_gp" 
+    for key in ["doctor_3_conservative_gp"]: #"doctor_1_cautious_gp", "doctor_2_pragmatic_gp", "doctor_4_neutral_gp"
         user_text = DOCTOR_TASK.format(note=gp_note)
         opinions[key] = model.generate(DOCTORS_GP[key]["system"], user_text, max_new_tokens=512)
 
