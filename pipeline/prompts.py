@@ -2,12 +2,12 @@
 # DOCTOR_TASK/CHIEF_TASK + roller
 
 DOCTORS_GP = {
-    "doctor_1_cautious_gp": {
-        "system": "You are an experienced General Practitioner. Very cautious, low threshold for further workup. Short and structured."
+     "doctor_1_cautious_gp": {
+         "system": "You are an experienced General Practitioner. Very cautious, low threshold for further workup. Short and structured."
+     },
+    "doctor_2_pragmatic_gp": {
+        "system": "You are a pragmatic General Practitioner. Follows guidelines, avoids unnecessary tests. Structured answer."
     },
-    # "doctor_2_pragmatic_gp": {
-    #     "system": "You are a pragmatic General Practitioner. Follows guidelines, avoids unnecessary tests. Structured answer."
-    # },
     "chief_physician_decider": {
          "system": "You just follow the other doctors decision" #You are the chief physician and lead the MDT. Make the final decision based on inputs. Weigh disagreements and propose a plan.
     },
