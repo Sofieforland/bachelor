@@ -230,7 +230,7 @@ def build_parsed_predictions(records: List[Dict[str, Any]], judge_name: str, chi
                     "is_judge": int(role == judge_name),
                     "decision": dec,       # 1=YES, 0=NO, None
                     "p_yes": p,            # 0..1, None
-                    "raw": raw_text,
+                    "raw_text": raw_text,  # beholdes internt for pairwise_follow, men tas bort før pen CSV lagres
                     "word_count": word_count(raw_text),
                     "contradiction": contradiction(dec, p),
                     "evidence_cited": json.dumps(evidence_list, ensure_ascii=False),
@@ -263,8 +263,8 @@ def build_pairwise_follow(df_preds: pd.DataFrame, judge_name: str) -> pd.DataFra
     """
     rows = []
 
-    df_j = df_preds[df_preds["role"] == judge_name][["case_id", "decision", "p_yes", "raw"]].rename(
-        columns={"decision": "judge_decision", "p_yes": "judge_p_yes", "raw": "judge_raw"}
+    df_j = df_preds[df_preds["role"] == judge_name][["case_id", "decision", "p_yes", "raw_text"]].rename(
+        columns={"decision": "judge_decision", "p_yes": "judge_p_yes", "raw_text": "judge_raw"}
     )
     df_p = df_preds[df_preds["role"] != judge_name].copy()
 
@@ -424,6 +424,127 @@ def compute_metrics_summary(df_preds: pd.DataFrame, df_pair: pd.DataFrame, judge
     return df_sum
 
 
+def build_case_overview(df_preds: pd.DataFrame, judge_name: str) -> pd.DataFrame:
+    """
+    Lager en lettlest oversikt: én rad per case.
+    """
+    rows = []
+
+    for case_id, g in df_preds.groupby("case_id"):
+        row: Dict[str, Any] = {"case_id": case_id}
+
+        for _, r in g.iterrows():
+            role = str(r["role"])
+            row[f"{role}_decision"] = r["decision"]
+            row[f"{role}_p_yes"] = r["p_yes"]
+            row[f"{role}_word_count"] = r["word_count"]
+            row[f"{role}_contradiction"] = r["contradiction"]
+            row[f"{role}_evidence_alignment"] = r["evidence_alignment"]
+            row["y_true"] = r.get("y_true", None)
+
+        panel = g[g["role"] != judge_name]
+        decs = set(panel["decision"].dropna().astype(int).tolist()) if panel["decision"].notna().any() else set()
+        row["disagreement"] = int((0 in decs) and (1 in decs)) if decs else 0
+
+        if f"{judge_name}_decision" in row and "cautious_gp_decision" in row:
+            row["judge_follows_cautious_gp"] = int(row[f"{judge_name}_decision"] == row["cautious_gp_decision"])
+        if f"{judge_name}_decision" in row and "pragmatic_gp_decision" in row:
+            row["judge_follows_pragmatic_gp"] = int(row[f"{judge_name}_decision"] == row["pragmatic_gp_decision"])
+
+        rows.append(row)
+
+    return pd.DataFrame(rows)
+
+
+def prettify_outputs(
+    df_preds: pd.DataFrame,
+    df_pair: pd.DataFrame,
+    df_sum: pd.DataFrame,
+    df_case: pd.DataFrame,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """
+    Rydder kolonner, sorterer og runder av tall før CSV-lagring.
+    """
+
+    # parsed_predictions.csv
+    pred_cols = [
+        "case_id",
+        "role",
+        "is_judge",
+        "decision",
+        "p_yes",
+        "word_count",
+        "contradiction",
+        "evidence_alignment",
+        "y_true",
+    ]
+    pred_cols = [c for c in pred_cols if c in df_preds.columns]
+    df_preds_out = df_preds[pred_cols].copy()
+
+    # pairwise_follow.csv
+    pair_cols = [
+        "case_id",
+        "panelist",
+        "disagreement",
+        "judge_follows",
+        "abs_prob_diff",
+        "judge_decision",
+        "panelist_decision",
+        "judge_p_yes",
+        "panelist_p_yes",
+        "panelist_word_count",
+        "panelist_contradiction",
+        "panelist_evidence_alignment",
+        "chief_mentions_panelist",
+    ]
+    pair_cols = [c for c in pair_cols if c in df_pair.columns]
+    df_pair_out = df_pair[pair_cols].copy()
+
+    # metrics_summary.csv
+    sum_cols = [
+        "role",
+        "is_judge",
+        "n_cases",
+        "decision_rate_yes",
+        "mean_p_yes",
+        "mean_word_count",
+        "contradiction_rate",
+        "mean_evidence_alignment",
+        "follow_rate_disagreement",
+        "n_disagreement_cases",
+        "mean_abs_prob_diff_disagreement",
+        "chief_mentions_rate",
+        "accuracy",
+        "brier",
+    ]
+    sum_cols = [c for c in sum_cols if c in df_sum.columns]
+    df_sum_out = df_sum[sum_cols].copy()
+
+    # case_overview.csv
+    df_case_out = df_case.copy()
+
+    # Rund av numeriske kolonner
+    for df_ in [df_preds_out, df_pair_out, df_sum_out, df_case_out]:
+        if not df_.empty:
+            num_cols = df_.select_dtypes(include="number").columns
+            df_[num_cols] = df_[num_cols].round(3)
+
+    # Sorter
+    if not df_preds_out.empty:
+        df_preds_out = df_preds_out.sort_values(["case_id", "is_judge", "role"], ascending=[True, False, True])
+
+    if not df_pair_out.empty:
+        df_pair_out = df_pair_out.sort_values(["case_id", "panelist"])
+
+    if not df_sum_out.empty:
+        df_sum_out = df_sum_out.sort_values(["is_judge", "role"], ascending=[False, True])
+
+    if not df_case_out.empty and "case_id" in df_case_out.columns:
+        df_case_out = df_case_out.sort_values("case_id")
+
+    return df_preds_out, df_pair_out, df_sum_out, df_case_out
+
+
 # ============================================================
 # 5) IO + MAIN (les JSONL og skriv CSV-output)
 # ============================================================
@@ -480,6 +601,8 @@ def main() -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     records = read_jsonl(in_path)
+    #kjører bare for 4 pasienter!!!!!!!!!!! fjerne senere
+    records = records[:4]
 
     # 1) parsed_predictions.csv: grunnlaget for nesten alle metrics
     df_preds = build_parsed_predictions(records, judge_name=args.judge_name, chief_key=args.chief_key)
@@ -490,27 +613,36 @@ def main() -> None:
     # 3) metrics_summary.csv: aggregerte tall per rolle
     df_sum = compute_metrics_summary(df_preds, df_pair, judge_name=args.judge_name)
 
+    # 4) case_overview.csv: én rad per pasient for bedre oversikt
+    df_case = build_case_overview(df_preds, judge_name=args.judge_name)
+
+    # Gjør output-filene penere og enklere å lese
+    df_preds_out, df_pair_out, df_sum_out, df_case_out = prettify_outputs(df_preds, df_pair, df_sum, df_case)
+
     preds_path = out_dir / "parsed_predictions.csv"
     pair_path = out_dir / "pairwise_follow.csv"
     sum_path = out_dir / "metrics_summary.csv"
+    case_path = out_dir / "case_overview.csv"
 
-    df_preds.to_csv(preds_path, index=False)
-    df_pair.to_csv(pair_path, index=False)
-    df_sum.to_csv(sum_path, index=False)
+    df_preds_out.to_csv(preds_path, index=False)
+    df_pair_out.to_csv(pair_path, index=False)
+    df_sum_out.to_csv(sum_path, index=False)
+    df_case_out.to_csv(case_path, index=False)
 
     print("Wrote:")
     print(f"- {preds_path}")
     print(f"- {pair_path}")
     print(f"- {sum_path}")
+    print(f"- {case_path}")
 
     # Lite “peek” i terminalen
-    if "follow_rate_disagreement" in df_sum.columns:
+    if "follow_rate_disagreement" in df_sum_out.columns:
         cols = ["role", "is_judge", "n_cases", "decision_rate_yes", "mean_p_yes",
                 "follow_rate_disagreement", "n_disagreement_cases", "mean_abs_prob_diff_disagreement",
                 "accuracy", "brier", "chief_mentions_rate"]
-        cols = [c for c in cols if c in df_sum.columns]
+        cols = [c for c in cols if c in df_sum_out.columns]
         print("\nSummary preview:")
-        print(df_sum.sort_values(["is_judge", "role"], ascending=[False, True])[cols].to_string(index=False))
+        print(df_sum_out[cols].to_string(index=False))
 
 
 if __name__ == "__main__":
