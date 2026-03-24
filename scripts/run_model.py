@@ -5,10 +5,10 @@
 from pathlib import Path
 import argparse
 
-from bachelor.models.qwen import QwenClient
-from bachelor.models.llama import LlamaClient
-from bachelor.models.medgemma import MedGemmaClient
-from bachelor.pipeline.runner import run_file
+from models.qwen import QwenClient
+from models.llama import LlamaClient
+from models.medgemma import MedGemmaClient
+from pipeline.runner import run_file
 
 
 BASE_DIR = Path.home() / "Bachelor" / "BachelorProject" / "bachelor"
