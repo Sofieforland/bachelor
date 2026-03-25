@@ -106,5 +106,5 @@ def run_file(
 
         with open(out_jsonl_path, "a", encoding="utf-8") as f:
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
+            print(f"Done with patient {patient_id} ({i+1}/{len(df)})")
         print("Saved JSON:", out_jsonl_path)
-        print(f"Done with patient {patient_id} ({i+1}/{len(df)})")
