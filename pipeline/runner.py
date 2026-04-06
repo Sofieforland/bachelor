@@ -46,8 +46,8 @@ def run_file(
 
         cautious_text = opinions["doctor_1_cautious_gp"]
         overconfident_text = opinions["doctor_2_overconfident_gp"]
-        concervative_text = opinions("doctor_3_conservative_gp")
-        neutral_text = opinions("doctor_4_neutral_gp")
+        concervative_text = opinions["doctor_3_conservative_gp"]
+        neutral_text = opinions["doctor_4_neutral_gp"]
 
         c_dec, c_p = parse_decision_fields(cautious_text)
         p_dec, p_p = parse_decision_fields(overconfident_text)
