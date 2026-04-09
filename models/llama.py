@@ -1,8 +1,9 @@
-# models/llama_client.py
+import gc
 import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from .base import ModelClient
 
+#la inn cleanup for inputs generated og trimmed
 class LlamaClient(ModelClient):
     def __init__(self, model_id: str, torch_dtype="auto", device_map="auto", use_fast=True):
         self.tokenizer = AutoTokenizer.from_pretrained(model_id, use_fast=use_fast)
@@ -10,7 +11,9 @@ class LlamaClient(ModelClient):
             self.tokenizer.pad_token = self.tokenizer.eos_token
 
         self.model = AutoModelForCausalLM.from_pretrained(
-            model_id, torch_dtype=torch_dtype, device_map=device_map
+            model_id,
+            torch_dtype=torch_dtype,
+            device_map=device_map,
         )
         self.model.eval()
 
@@ -23,6 +26,7 @@ class LlamaClient(ModelClient):
     @torch.inference_mode()
     def generate(self, system_prompt: str, user_text: str, max_new_tokens: int = 512) -> str:
         messages = self._build_messages(system_prompt, user_text)
+
         inputs = self.tokenizer.apply_chat_template(
             messages,
             tokenize=True,
@@ -42,5 +46,13 @@ class LlamaClient(ModelClient):
 
         prompt_len = inputs["input_ids"].shape[1]
         trimmed = generated[:, prompt_len:]
-        return self.tokenizer.decode(trimmed[0], skip_special_tokens=True).strip()
-    
+        text = self.tokenizer.decode(trimmed[0], skip_special_tokens=True).strip()
+
+        del inputs
+        del generated
+        del trimmed
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+        return text
