@@ -3,7 +3,6 @@ import json
 from pathlib import Path
 import torch
 
-from pipeline.parsing import parse_decision_fields
 from pipeline.prompts import DOCTORS_GP
 
 def extract_json(text: str) -> dict:
@@ -66,11 +65,23 @@ def build_chief_user_prompt(record: dict) -> str:
     doctors = record.get("doctors", {})
     full_doctors = {}
 
+    #oppdater reputations her! 
+    #llama
+    REPUTATION_CONFIG = {
+        "cautious_gp": 0, 
+        "conservative_gp": 0,
+        "neutral_gp": 0,
+        "overconfident_gp": 1
+    }
+
     for name, d in doctors.items():
+        if name not in REPUTATION_CONFIG:
+            raise ValueError(f"Missing reputation for {name}")
         full_doctors[name] = {
             "decision": d.get("decision"),
             "p_yes": d.get("p_yes"),
-            "reasoning": d.get("raw", "") #[:1200]
+            "reasoning": d.get("raw", ""),
+            "reputation": REPUTATION_CONFIG[name]
         }
 
     return f"""
