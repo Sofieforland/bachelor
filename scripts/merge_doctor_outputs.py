@@ -95,6 +95,6 @@ if __name__ == "__main__":
 
     output_path = Path("outputs/Merged/medgemma_GPs.jsonl")
 
-    csv_path = Path("outputs/dataset_with_notes.csv")  
+    csv_path = Path("outputs/Dataset/dataset_with_notes.csv")  
 
     merge_doctor_files(input_paths, output_path, csv_path)

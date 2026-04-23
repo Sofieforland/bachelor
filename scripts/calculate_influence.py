@@ -3,7 +3,7 @@ from collections import Counter
 
 counter = Counter()
 
-with open("outputs/Reputation_1/chief_outputs_medgemma.jsonl", "r") as f:
+with open("outputs/Reputation_0/chief_outputs_llama.jsonl", "r") as f:
     for line in f:
         row = json.loads(line)
         

@@ -1,649 +1,696 @@
-#!/usr/bin/env python3
-from __future__ import annotations
-
-import argparse
 import json
-import math
 import re
-from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
-
+import argparse
 import numpy as np
 import pandas as pd
-
-# ============================================================
-# 1) PARSING-REGLER (henter YES/NO og sannsynlighet fra output)
-# ============================================================
-
-YES_SET = {"YES", "Y", "TRUE", "1"}
-NO_SET = {"NO", "N", "FALSE", "0"}
-
-# Finder "YES" eller "NO" i fri tekst
-DECISION_RE = re.compile(r"\b(YES|NO)\b", re.IGNORECASE)
-
-# Finder sannsynlighet i litt ulike formater:
-# - "P_YES=0.75"
-# - "probability: 0.73"
-# - "YES (0.73)" / "YES [73%]" osv
-PROB_RE = re.compile(
-    r"(?:(?:prob(?:ability)?)|(?:p\s*[_\(]?\s*yes\s*[_\)]?))\s*[:=]\s*([0-9]*\.?[0-9]+)\s*%?"
-    r"|(?:\bYES\b|\bNO\b)\s*[\(\[]\s*([0-9]*\.?[0-9]+)\s*%?\s*[\)\]]",
-    re.IGNORECASE,
+from pathlib import Path
+from sklearn.metrics import (
+    accuracy_score,
+    recall_score,
+    balanced_accuracy_score,
+    confusion_matrix,
+    f1_score,
+    roc_auc_score,
+    brier_score_loss,
 )
 
+"""
+python3 scripts/compute_metrics.py \
+  --jsonl outputs/Merged_chief/rep_0/llama_with_doctors_and_chief.jsonl \
+  --marksheet outputs/Dataset/filtered_pasients.csv \
+  --target-col GP_fasit \
+  --output outputs/Metrics/Rep_0/llama_metrics.json
+"""
 
-def normalize_prob(x: Any) -> Optional[float]:
-    """
-    Normaliserer sannsynlighet til 0..1.
-    - Hvis output er 0.75 -> 0.75
-    - Hvis output er 75 -> 0.75 (tolkes som prosent)
-    """
+
+DOCTOR_NAMES = [
+    "cautious_gp",
+    "conservative_gp",
+    "neutral_gp",
+    "overconfident_gp",
+]
+
+
+def summarize_scores(x):
+    x = np.asarray(x, dtype=float)
+    if len(x) == 0:
+        return None
+
+    if len(x) == 1:
+        return {
+            "mean": float(np.mean(x)),
+            "median": float(np.median(x)),
+            "std": 0.0,
+            "min": float(np.min(x)),
+            "max": float(np.max(x)),
+            "ci": [float(x[0]), float(x[0])],
+        }
+
+    return {
+        "mean": float(np.mean(x)),
+        "median": float(np.median(x)),
+        "std": float(np.std(x, ddof=1)),
+        "min": float(np.min(x)),
+        "max": float(np.max(x)),
+        "ci": np.percentile(x, [2.5, 97.5]).tolist(),
+    }
+
+
+def load_jsonl(path: Path):
+    rows = []
+    with open(path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                rows.append(json.loads(line))
+    return rows
+
+
+def to_binary_label(x):
     if x is None:
         return None
-    try:
-        v = float(x)
-    except Exception:
-        return None
-
-    if math.isnan(v) or math.isinf(v):
-        return None
-
-    if 0.0 <= v <= 1.0:
-        return float(v)
-    if 1.0 < v <= 100.0:
-        return float(v) / 100.0
+    x = str(x).strip().upper()
+    if x == "YES":
+        return 1
+    if x == "NO":
+        return 0
     return None
 
 
-def parse_decision_prob_from_obj(obj: Dict[str, Any]) -> Tuple[Optional[int], Optional[float], str]:
-    """
-    Returnerer:
-      - decision_01: 1=YES, 0=NO, None hvis ikke funnet
-      - p_yes: sannsynlighet(YES) i 0..1, None hvis ikke funnet
-      - raw_text_used: teksten vi faktisk parse'et fra
-    """
-
-    # (A) Først: bruk strukturerte felter hvis de finnes
-    # Du har f.eks:
-    #   - doctors.*.decision
-    #   - doctors.*.p_yes
-    #   - chief.final_decision
-    decision = (
-        obj.get("decision")
-        or obj.get("Decision")
-        or obj.get("final_decision")
-        or obj.get("FINAL_DECISION")
-    )
-    prob = (
-        obj.get("p_yes")
-        or obj.get("pYES")
-        or obj.get("probability")
-        or obj.get("Probability")
-        or obj.get("prob_yes")
-        or obj.get("P_YES")
-    )
-
-    decision_01: Optional[int] = None
-    if isinstance(decision, str):
-        d = decision.strip().upper()
-        if d in YES_SET:
-            decision_01 = 1
-        elif d in NO_SET:
-            decision_01 = 0
-    elif isinstance(decision, (int, bool)):
-        # 0/1 eller True/False
-        decision_01 = int(decision)
-
-    prob_01 = normalize_prob(prob)
-
-    raw = obj.get("raw") or obj.get("text") or obj.get("response") or ""
-    raw_str = raw if isinstance(raw, str) else json.dumps(raw, ensure_ascii=False)
-
-    # (B) Hvis decision/prob mangler: forsøk å finne det i raw-teksten via regex
-    if decision_01 is None and raw_str:
-        m = DECISION_RE.search(raw_str)
-        if m:
-            decision_01 = 1 if m.group(1).upper() == "YES" else 0
-
-    if prob_01 is None and raw_str:
-        m = PROB_RE.search(raw_str)
-        if m:
-            g1 = m.group(1)
-            g2 = m.group(2)
-            prob_01 = normalize_prob(g1 if g1 is not None else g2)
-
-    return decision_01, prob_01, raw_str
+def get_prediction(row, evaluator: str):
+    if evaluator == "chief":
+        return row.get("chief", {}).get("final_decision")
+    return row.get("doctors", {}).get(evaluator, {}).get("decision")
 
 
-def word_count(text: str) -> int:
-    """En enkel proxy for 'hvor mye forklaring' modellen skrev."""
+def get_probability_yes(row, evaluator: str):
+    if evaluator == "chief":
+        return row.get("chief", {}).get("final_probability_yes")
+    return row.get("doctors", {}).get(evaluator, {}).get("p_yes")
+
+
+def safe_float(x):
+    if x is None:
+        return None
+    try:
+        return float(x)
+    except (ValueError, TypeError):
+        return None
+
+
+def extract_word_count(text):
     if not text:
         return 0
-    return len(re.findall(r"\S+", text))
+    return len(re.findall(r"\b\w+\b", str(text)))
 
 
-def contradiction(decision_01: Optional[int], p_yes: Optional[float], threshold: float = 0.5) -> Optional[int]:
+def extract_bullets_or_sections(text):
     """
-    'Contradiction' = intern inkonsistens:
-      - sier YES, men p_yes < 0.5
-      - sier NO, men p_yes >= 0.5
+    En enkel parser for å hente ut nummererte seksjoner/bullets fra raw-tekst.
+    Ikke perfekt, men robust nok til analysebruk.
     """
-    if decision_01 is None or p_yes is None:
-        return None
-    if decision_01 == 1 and p_yes < threshold:
-        return 1
-    if decision_01 == 0 and p_yes >= threshold:
-        return 1
-    return 0
-
-
-def safe_get_case_id(rec: Dict[str, Any]) -> str:
-    """Hent case-id/patient-id robust."""
-    for k in ["case_id", "patient_ID", "patient_id", "id", "ID"]:
-        if k in rec:
-            return str(rec[k])
-    return str(abs(hash(json.dumps(rec, sort_keys=True, ensure_ascii=False))) % 10**12)
-
-
-# ============================================================
-# 2) BYGG "parsed_predictions.csv"
-#    (én rad per case per rolle: hver panelist + chief)
-# ============================================================
-
-def collect_roles_for_case(rec: Dict[str, Any], chief_key: str) -> Dict[str, Any]:
-    """
-    Samler alle rolle-output i én dict.
-
-    Din JSONL:
-      - panelister ligger i rec["doctors"]
-      - chief ligger som rec["chief"] på toppnivå
-
-    Dette gjør at vi kan behandle chief på samme måte som de andre rollene.
-    """
-    roles: Dict[str, Any] = {}
-    doctors = rec.get("doctors", {})
-    if isinstance(doctors, dict):
-        roles.update(doctors)
-
-    # legg til chief hvis den finnes på toppnivå
-    if chief_key in rec and isinstance(rec[chief_key], dict):
-        roles[chief_key] = rec[chief_key]
-
-    return roles
-
-
-def build_parsed_predictions(records: List[Dict[str, Any]], judge_name: str, chief_key: str) -> pd.DataFrame:
-    rows = []
-
-    for rec in records:
-        case_id = safe_get_case_id(rec)
-
-        # (valgfritt) hvis du senere vil gjøre "evidence alignment":
-        input_obj = rec.get("input", None)
-        input_keys = set(input_obj.keys()) if isinstance(input_obj, dict) else set()
-
-        # (valgfritt) hvis du har fasit-label (y_true), kan vi regne accuracy osv.
-        y_true = rec.get("y_true") or rec.get("label") or rec.get("csPCa") or rec.get("target")
-        y_true_01 = None
-        if isinstance(y_true, str):
-            y = y_true.strip().upper()
-            if y in YES_SET:
-                y_true_01 = 1
-            elif y in NO_SET:
-                y_true_01 = 0
-        elif isinstance(y_true, (int, bool)) and y_true in [0, 1, True, False]:
-            y_true_01 = int(y_true)
-
-        # Samle alle roller: panelister + chief
-        roles = collect_roles_for_case(rec, chief_key=chief_key)
-
-        for role, out in roles.items():
-            # Normaliser til dict
-            if isinstance(out, str):
-                out = {"raw": out}
-            elif not isinstance(out, dict):
-                out = {"raw": json.dumps(out, ensure_ascii=False)}
-
-            dec, p, raw_text = parse_decision_prob_from_obj(out)
-
-            # Evidence/citations (valgfritt felt)
-            evidence = out.get("evidence_cited") or out.get("evidence") or out.get("citations")
-            if isinstance(evidence, list):
-                evidence_list = [str(x) for x in evidence]
-            elif isinstance(evidence, str):
-                evidence_list = [e.strip() for e in evidence.split(",") if e.strip()]
-            else:
-                evidence_list = []
-
-            # Evidence alignment (valgfritt):
-            # Hvis evidence_list inneholder keys som finnes i rec["input"], scorer vi hvor mange som matcher.
-            ev_align = None
-            if evidence_list and input_keys:
-                hits = sum(1 for e in evidence_list if e in input_keys)
-                ev_align = hits / max(1, len(evidence_list))
-
-            rows.append(
-                {
-                    "case_id": case_id,
-                    "role": role,
-                    # is_judge = 1 for chief/judge-rollen, 0 for panelister
-                    "is_judge": int(role == judge_name),
-                    "decision": dec,       # 1=YES, 0=NO, None
-                    "p_yes": p,            # 0..1, None
-                    "raw_text": raw_text,  # beholdes internt for pairwise_follow, men tas bort før pen CSV lagres
-                    "word_count": word_count(raw_text),
-                    "contradiction": contradiction(dec, p),
-                    "evidence_cited": json.dumps(evidence_list, ensure_ascii=False),
-                    "evidence_alignment": ev_align,
-                    "y_true": y_true_01,
-                }
-            )
-
-    return pd.DataFrame(rows)
-
-
-# ============================================================
-# 3) "pairwise_follow.csv"
-#    (måler hvor ofte chief følger hver panelist i uenighet)
-# ============================================================
-
-def build_pairwise_follow(df_preds: pd.DataFrame, judge_name: str) -> pd.DataFrame:
-    """
-    Én rad per (case, panelist).
-    Dette brukes til "follow-rate" metrics:
-
-      - disagreement: om panelet var uenig (både YES og NO finnes blant panelister)
-      - judge_follows: kun definert når disagreement=1:
-            1 hvis chief sin beslutning == panelist sin beslutning
-            0 ellers
-      - abs_prob_diff: hvor langt unna p_yes er mellom panelist og chief
-
-    Poenget:
-      Hvis panelistene er uenige, kan vi se hvem chief "ligner mest på" i beslutning/prob.
-    """
-    rows = []
-
-    df_j = df_preds[df_preds["role"] == judge_name][["case_id", "decision", "p_yes", "raw_text"]].rename(
-        columns={"decision": "judge_decision", "p_yes": "judge_p_yes", "raw_text": "judge_raw"}
-    )
-    df_p = df_preds[df_preds["role"] != judge_name].copy()
-
-    if df_j.empty:
-        return pd.DataFrame(
-            columns=[
-                "case_id",
-                "panelist",
-                "disagreement",
-                "judge_follows",
-                "abs_prob_diff",
-                "judge_decision",
-                "panelist_decision",
-                "judge_p_yes",
-                "panelist_p_yes",
-                "chief_mentions_panelist",
-            ]
-        )
-
-    # Disagreement per case: finnes både 0 og 1 blant panelister som har decision
-    panel_decisions = (
-        df_p.dropna(subset=["decision"])
-        .groupby("case_id")["decision"]
-        .agg(lambda s: set(int(x) for x in s.tolist()))
-    )
-    disagreement_map = {cid: int((0 in s) and (1 in s)) for cid, s in panel_decisions.items()}
-
-    # Merge judge info på panelist-rader
-    df_m = df_p.merge(df_j, on="case_id", how="left")
-
-    for _, r in df_m.iterrows():
-        cid = r["case_id"]
-        panelist = r["role"]
-        dis = disagreement_map.get(cid, 0)
-
-        panel_dec = r["decision"]
-        judge_dec = r["judge_decision"]
-
-        follows = None
-        if dis == 1 and pd.notna(panel_dec) and pd.notna(judge_dec):
-            follows = int(int(panel_dec) == int(judge_dec))
-
-        abs_diff = None
-        if pd.notna(r["p_yes"]) and pd.notna(r["judge_p_yes"]):
-            abs_diff = float(abs(float(r["judge_p_yes"]) - float(r["p_yes"])))
-
-        # "Influence proxy": nevner chief panelisten i teksten?
-        # (Dette er en enkel indikator på "chief refererer til panelistene".)
-        chief_text = str(r.get("judge_raw", "") or "")
-        mentions = int(panelist.lower() in chief_text.lower())
-
-        rows.append(
-            {
-                "case_id": cid,
-                "panelist": panelist,
-                "disagreement": dis,
-                "judge_follows": follows,
-                "abs_prob_diff": abs_diff,
-                "judge_decision": judge_dec,
-                "panelist_decision": panel_dec,
-                "judge_p_yes": r["judge_p_yes"],
-                "panelist_p_yes": r["p_yes"],
-                "panelist_word_count": r.get("word_count", None),
-                "panelist_contradiction": r.get("contradiction", None),
-                "panelist_evidence_alignment": r.get("evidence_alignment", None),
-                "chief_mentions_panelist": mentions,
-            }
-        )
-
-    return pd.DataFrame(rows)
-
-
-# ============================================================
-# 4) "metrics_summary.csv"
-#    (aggregerer metrics per rolle + panelist-follow metrics)
-# ============================================================
-
-def _accuracy_from_decisions(g: pd.DataFrame) -> float:
-    """
-    Accuracy måler hvor ofte modellen treffer fasit (y_true).
-    Krever at y_true finnes i fila (0/1).
-    """
-    gg = g.dropna(subset=["decision", "y_true"])
-    if gg.empty:
-        return np.nan
-    return float((gg["decision"].astype(int) == gg["y_true"].astype(int)).mean())
-
-
-def _brier_score(g: pd.DataFrame) -> float:
-    """
-    Brier score måler sannsynlighet-kvalitet:
-      mean((p_yes - y_true)^2)
-    Krever både p_yes og y_true.
-    Lavere er bedre.
-    """
-    gg = g.dropna(subset=["p_yes", "y_true"])
-    if gg.empty:
-        return np.nan
-    p = gg["p_yes"].astype(float).to_numpy()
-    y = gg["y_true"].astype(float).to_numpy()
-    return float(np.mean((p - y) ** 2))
-
-
-def compute_metrics_summary(df_preds: pd.DataFrame, df_pair: pd.DataFrame, judge_name: str) -> pd.DataFrame:
-    """
-    Lager én oppsummeringsrad per rolle.
-
-    Inneholder:
-      - decision_rate_yes: hvor ofte rollen sier YES
-      - mean_p_yes: gj.sn sannsynlighet for YES
-      - mean_word_count: gj.sn lengde på svaret
-      - contradiction_rate: hvor ofte decision motsier p_yes
-      - follow_rate_disagreement: for panelister, hvor ofte chief følger dem når det er uenighet
-      - mean_abs_prob_diff_disagreement: hvor nær panelisten er chief i sannsynlighet ved uenighet
-      - chief_mentions_rate: hvor ofte chief nevner panelisten (proxy for "influence"/referanser)
-      - (valgfritt) accuracy og brier hvis y_true finnes
-    """
-    summary_rows = []
-
-    # Per-rolle stats fra parsed_predictions
-    for role, g in df_preds.groupby("role"):
-        summary_rows.append(
-            {
-                "role": role,
-                "is_judge": int(role == judge_name),
-                "n_cases": int(g["case_id"].nunique()),
-                "decision_rate_yes": float(np.nanmean(g["decision"])) if g["decision"].notna().any() else np.nan,
-                "mean_p_yes": float(np.nanmean(g["p_yes"])) if g["p_yes"].notna().any() else np.nan,
-                "mean_word_count": float(np.nanmean(g["word_count"])) if g["word_count"].notna().any() else np.nan,
-                "contradiction_rate": float(np.nanmean(g["contradiction"])) if g["contradiction"].notna().any() else np.nan,
-                "mean_evidence_alignment": float(np.nanmean(g["evidence_alignment"])) if g["evidence_alignment"].notna().any() else np.nan,
-                # Label-baserte metrics (kun hvis y_true finnes)
-                "accuracy": _accuracy_from_decisions(g),
-                "brier": _brier_score(g),
-            }
-        )
-
-    df_sum = pd.DataFrame(summary_rows)
-
-    # Panelist-follow metrics fra pairwise_follow
-    if not df_pair.empty:
-        dis = df_pair[df_pair["disagreement"] == 1].copy()
-
-        # follow-rate kun når panelistene faktisk var uenige
-        follow = dis.groupby("panelist")["judge_follows"].mean()
-        absdiff = dis.groupby("panelist")["abs_prob_diff"].mean()
-        dis_n = dis.groupby("panelist")["case_id"].nunique()
-
-        # hvor ofte chief nevner panelisten (uavhengig av uenighet)
-        mention_rate = df_pair.groupby("panelist")["chief_mentions_panelist"].mean()
-
-        df_sum["follow_rate_disagreement"] = df_sum["role"].map(follow)
-        df_sum["mean_abs_prob_diff_disagreement"] = df_sum["role"].map(absdiff)
-        df_sum["n_disagreement_cases"] = df_sum["role"].map(dis_n)
-        df_sum["chief_mentions_rate"] = df_sum["role"].map(mention_rate)
-
-    return df_sum
-
-
-def build_case_overview(df_preds: pd.DataFrame, judge_name: str) -> pd.DataFrame:
-    """
-    Lager en lettlest oversikt: én rad per case.
-    """
-    rows = []
-
-    for case_id, g in df_preds.groupby("case_id"):
-        row: Dict[str, Any] = {"case_id": case_id}
-
-        for _, r in g.iterrows():
-            role = str(r["role"])
-            row[f"{role}_decision"] = r["decision"]
-            row[f"{role}_p_yes"] = r["p_yes"]
-            row[f"{role}_word_count"] = r["word_count"]
-            row[f"{role}_contradiction"] = r["contradiction"]
-            row[f"{role}_evidence_alignment"] = r["evidence_alignment"]
-            row["y_true"] = r.get("y_true", None)
-
-        panel = g[g["role"] != judge_name]
-        decs = set(panel["decision"].dropna().astype(int).tolist()) if panel["decision"].notna().any() else set()
-        row["disagreement"] = int((0 in decs) and (1 in decs)) if decs else 0
-
-        if f"{judge_name}_decision" in row and "cautious_gp_decision" in row:
-            row["judge_follows_cautious_gp"] = int(row[f"{judge_name}_decision"] == row["cautious_gp_decision"])
-        if f"{judge_name}_decision" in row and "pragmatic_gp_decision" in row:
-            row["judge_follows_pragmatic_gp"] = int(row[f"{judge_name}_decision"] == row["pragmatic_gp_decision"])
-
-        rows.append(row)
-
-    return pd.DataFrame(rows)
-
-
-def prettify_outputs(
-    df_preds: pd.DataFrame,
-    df_pair: pd.DataFrame,
-    df_sum: pd.DataFrame,
-    df_case: pd.DataFrame,
-) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    """
-    Rydder kolonner, sorterer og runder av tall før CSV-lagring.
-    """
-
-    # parsed_predictions.csv
-    pred_cols = [
-        "case_id",
-        "role",
-        "is_judge",
-        "decision",
-        "p_yes",
-        "word_count",
-        "contradiction",
-        "evidence_alignment",
-        "y_true",
-    ]
-    pred_cols = [c for c in pred_cols if c in df_preds.columns]
-    df_preds_out = df_preds[pred_cols].copy()
-
-    # pairwise_follow.csv
-    pair_cols = [
-        "case_id",
-        "panelist",
-        "disagreement",
-        "judge_follows",
-        "abs_prob_diff",
-        "judge_decision",
-        "panelist_decision",
-        "judge_p_yes",
-        "panelist_p_yes",
-        "panelist_word_count",
-        "panelist_contradiction",
-        "panelist_evidence_alignment",
-        "chief_mentions_panelist",
-    ]
-    pair_cols = [c for c in pair_cols if c in df_pair.columns]
-    df_pair_out = df_pair[pair_cols].copy()
-
-    # metrics_summary.csv
-    sum_cols = [
-        "role",
-        "is_judge",
-        "n_cases",
-        "decision_rate_yes",
-        "mean_p_yes",
-        "mean_word_count",
-        "contradiction_rate",
-        "mean_evidence_alignment",
-        "follow_rate_disagreement",
-        "n_disagreement_cases",
-        "mean_abs_prob_diff_disagreement",
-        "chief_mentions_rate",
-        "accuracy",
-        "brier",
-    ]
-    sum_cols = [c for c in sum_cols if c in df_sum.columns]
-    df_sum_out = df_sum[sum_cols].copy()
-
-    # case_overview.csv
-    df_case_out = df_case.copy()
-
-    # Rund av numeriske kolonner
-    for df_ in [df_preds_out, df_pair_out, df_sum_out, df_case_out]:
-        if not df_.empty:
-            num_cols = df_.select_dtypes(include="number").columns
-            df_[num_cols] = df_[num_cols].round(3)
-
-    # Sorter
-    if not df_preds_out.empty:
-        df_preds_out = df_preds_out.sort_values(["case_id", "is_judge", "role"], ascending=[True, False, True])
-
-    if not df_pair_out.empty:
-        df_pair_out = df_pair_out.sort_values(["case_id", "panelist"])
-
-    if not df_sum_out.empty:
-        df_sum_out = df_sum_out.sort_values(["is_judge", "role"], ascending=[False, True])
-
-    if not df_case_out.empty and "case_id" in df_case_out.columns:
-        df_case_out = df_case_out.sort_values("case_id")
-
-    return df_preds_out, df_pair_out, df_sum_out, df_case_out
-
-
-# ============================================================
-# 5) IO + MAIN (les JSONL og skriv CSV-output)
-# ============================================================
-
-def read_jsonl(path: Path) -> List[Dict[str, Any]]:
-    """
-    Leser enten:
-      - JSONL: én JSON per linje
-      - JSON:  én fil som er en liste: [ {...}, {...} ]
-    Returnerer alltid en liste med records.
-    """
-    text = path.read_text(encoding="utf-8").strip()
     if not text:
         return []
 
-    # Hvis fila starter med '[' antar vi at det er en JSON-liste
-    if text.startswith("["):
-        data = json.loads(text)
-        if not isinstance(data, list):
-            raise RuntimeError(f"{path} starts with '[' but is not a JSON list.")
-        # sikre at hvert element er dict
-        out = []
-        for i, obj in enumerate(data):
-            if isinstance(obj, dict):
-                out.append(obj)
-            else:
-                out.append({"raw": obj})
-        return out
+    text = str(text).strip()
+    if not text:
+        return []
 
-    # Ellers: fall back til JSONL (én per linje)
-    records: List[Dict[str, Any]] = []
-    with path.open("r", encoding="utf-8") as f:
-        for line_no, line in enumerate(f, start=1):
-            line = line.strip()
-            if not line:
-                continue
+    parts = re.split(r"\n\s*(?:\d+[\)\.]|•|-)\s*", text)
+    parts = [p.strip() for p in parts if p.strip()]
+    return parts
+
+
+def contradiction_flag(decision, probability_yes):
+    """
+    Marker motsetning når tekstlig/strukturert beslutning og sannsynlighet peker i hver sin retning.
+    """
+    decision_bin = to_binary_label(decision)
+    p = safe_float(probability_yes)
+
+    if decision_bin is None or p is None:
+        return None
+
+    if decision_bin == 1 and p < 0.5:
+        return True
+    if decision_bin == 0 and p >= 0.5:
+        return True
+    return False
+
+
+def compute_ece(y_true, p_yes, n_bins=10):
+    y_true = np.asarray(y_true, dtype=int)
+    p_yes = np.asarray(p_yes, dtype=float)
+
+    if len(y_true) == 0:
+        return None, []
+
+    bin_edges = np.linspace(0.0, 1.0, n_bins + 1)
+    ece = 0.0
+    rows = []
+
+    for i in range(n_bins):
+        left = bin_edges[i]
+        right = bin_edges[i + 1]
+
+        if i == n_bins - 1:
+            mask = (p_yes >= left) & (p_yes <= right)
+        else:
+            mask = (p_yes >= left) & (p_yes < right)
+
+        n_bin = int(np.sum(mask))
+        if n_bin == 0:
+            rows.append({
+                "bin": i,
+                "left": float(left),
+                "right": float(right),
+                "count": 0,
+                "mean_confidence": None,
+                "empirical_accuracy": None,
+                "abs_gap": None,
+            })
+            continue
+
+        mean_conf = float(np.mean(p_yes[mask]))
+        emp_acc = float(np.mean(y_true[mask]))
+        gap = abs(mean_conf - emp_acc)
+        ece += (n_bin / len(y_true)) * gap
+
+        rows.append({
+            "bin": i,
+            "left": float(left),
+            "right": float(right),
+            "count": n_bin,
+            "mean_confidence": mean_conf,
+            "empirical_accuracy": emp_acc,
+            "abs_gap": float(gap),
+        })
+
+    return float(ece), rows
+
+
+def calibration_curve_data(y_true, p_yes, n_bins=10):
+    _, rows = compute_ece(y_true, p_yes, n_bins=n_bins)
+    return rows
+
+
+def bootstrap_metrics(y_true, y_pred, p_yes=None, n_bootstrap=1000, random_state=42, stratify=True):
+    rng = np.random.default_rng(random_state)
+    n = len(y_true)
+
+    acc_scores = []
+    sens_scores = []
+    spec_scores = []
+    ba_scores = []
+    f1_scores = []
+    auc_scores = []
+    brier_scores = []
+
+    if stratify:
+        idx_pos = np.where(y_true == 1)[0]
+        idx_neg = np.where(y_true == 0)[0]
+
+        if len(idx_pos) == 0 or len(idx_neg) == 0:
+            raise ValueError("Stratified bootstrap krever minst én observasjon i hver klasse.")
+    else:
+        idx_pos = idx_neg = None
+
+    for _ in range(n_bootstrap):
+        if stratify:
+            sample_pos = rng.choice(idx_pos, size=len(idx_pos), replace=True)
+            sample_neg = rng.choice(idx_neg, size=len(idx_neg), replace=True)
+            indices = np.concatenate([sample_pos, sample_neg])
+            rng.shuffle(indices)
+        else:
+            indices = rng.choice(n, n, replace=True)
+
+        y_true_sample = y_true[indices]
+        y_pred_sample = y_pred[indices]
+
+        acc_scores.append(accuracy_score(y_true_sample, y_pred_sample))
+        sens_scores.append(recall_score(y_true_sample, y_pred_sample, zero_division=0))
+        spec_scores.append(recall_score(y_true_sample, y_pred_sample, pos_label=0, zero_division=0))
+        ba_scores.append(balanced_accuracy_score(y_true_sample, y_pred_sample))
+        f1_scores.append(f1_score(y_true_sample, y_pred_sample, zero_division=0))
+
+        if p_yes is not None:
+            p_sample = p_yes[indices]
             try:
-                records.append(json.loads(line))
-            except json.JSONDecodeError as e:
-                raise RuntimeError(f"JSON decode error in {path} at line {line_no}: {e}") from e
-    return records
+                if len(np.unique(y_true_sample)) == 2:
+                    auc_scores.append(roc_auc_score(y_true_sample, p_sample))
+            except Exception:
+                pass
+
+            try:
+                brier_scores.append(brier_score_loss(y_true_sample, p_sample))
+            except Exception:
+                pass
+
+    tn, fp, fn, tp = confusion_matrix(y_true, y_pred).ravel()
+
+    results = {
+        "n": int(len(y_true)),
+        "n_positive": int(np.sum(y_true == 1)),
+        "n_negative": int(np.sum(y_true == 0)),
+        "tp": int(tp),
+        "tn": int(tn),
+        "fp": int(fp),
+        "fn": int(fn),
+
+        "accuracy": float(accuracy_score(y_true, y_pred)),
+        "accuracy_bootstrap": summarize_scores(acc_scores),
+
+        "sensitivity": float(recall_score(y_true, y_pred, zero_division=0)),
+        "sensitivity_bootstrap": summarize_scores(sens_scores),
+
+        "specificity": float(recall_score(y_true, y_pred, pos_label=0, zero_division=0)),
+        "specificity_bootstrap": summarize_scores(spec_scores),
+
+        "balanced_accuracy": float(balanced_accuracy_score(y_true, y_pred)),
+        "balanced_accuracy_bootstrap": summarize_scores(ba_scores),
+
+        "f1": float(f1_score(y_true, y_pred, zero_division=0)),
+        "f1_bootstrap": summarize_scores(f1_scores),
+    }
+
+    if p_yes is not None:
+        try:
+            if len(np.unique(y_true)) == 2:
+                results["auc"] = float(roc_auc_score(y_true, p_yes))
+                results["auc_bootstrap"] = summarize_scores(auc_scores) if len(auc_scores) > 0 else None
+            else:
+                results["auc"] = None
+                results["auc_bootstrap"] = None
+        except Exception:
+            results["auc"] = None
+            results["auc_bootstrap"] = None
+
+        try:
+            results["brier_score"] = float(brier_score_loss(y_true, p_yes))
+            results["brier_score_bootstrap"] = summarize_scores(brier_scores) if len(brier_scores) > 0 else None
+        except Exception:
+            results["brier_score"] = None
+            results["brier_score_bootstrap"] = None
+
+        ece, ece_bins = compute_ece(y_true, p_yes, n_bins=10)
+        results["ece"] = ece
+        results["calibration_curve"] = ece_bins
+    else:
+        results["auc"] = None
+        results["auc_bootstrap"] = None
+        results["brier_score"] = None
+        results["brier_score_bootstrap"] = None
+        results["ece"] = None
+        results["calibration_curve"] = []
+
+    return results
 
 
-def main() -> None:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--input_jsonl", required=True, help="Path to JSONL (one case per line)")
-    ap.add_argument("--out_dir", required=True, help="Output directory for CSVs")
-    ap.add_argument("--judge_name", default="chief", help="Role name used in outputs (default: chief)")
-    ap.add_argument("--chief_key", default="chief", help="Key used at top-level for chief object (default: chief)")
-    args = ap.parse_args()
+def build_eval_df(jsonl_path: Path, evaluator: str):
+    rows = load_jsonl(jsonl_path)
 
-    in_path = Path(args.input_jsonl)
-    out_dir = Path(args.out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
+    extracted = []
+    skipped_missing_decision = 0
+    skipped_missing_probability = 0
 
-    records = read_jsonl(in_path)
-    #kjører bare for 4 pasienter!!!!!!!!!!! fjerne senere
-    records = records[:4]
+    for row in rows:
+        patient_id = str(row["patient_ID"]).strip()
 
-    # 1) parsed_predictions.csv: grunnlaget for nesten alle metrics
-    df_preds = build_parsed_predictions(records, judge_name=args.judge_name, chief_key=args.chief_key)
+        decision = get_prediction(row, evaluator)
+        probability_yes = get_probability_yes(row, evaluator)
 
-    # 2) pairwise_follow.csv: follow-rate når panelistene er uenige
-    df_pair = build_pairwise_follow(df_preds, judge_name=args.judge_name)
+        if decision is None:
+            skipped_missing_decision += 1
+            continue
 
-    # 3) metrics_summary.csv: aggregerte tall per rolle
-    df_sum = compute_metrics_summary(df_preds, df_pair, judge_name=args.judge_name)
+        decision = str(decision).strip().upper()
+        probability_yes = safe_float(probability_yes)
 
-    # 4) case_overview.csv: én rad per pasient for bedre oversikt
-    df_case = build_case_overview(df_preds, judge_name=args.judge_name)
+        if probability_yes is None:
+            skipped_missing_probability += 1
 
-    # Gjør output-filene penere og enklere å lese
-    df_preds_out, df_pair_out, df_sum_out, df_case_out = prettify_outputs(df_preds, df_pair, df_sum, df_case)
+        extracted.append({
+            "patient_ID": patient_id,
+            "model_decision": decision,
+            "model_p_yes": probability_yes,
+        })
 
-    preds_path = out_dir / "parsed_predictions.csv"
-    pair_path = out_dir / "pairwise_follow.csv"
-    sum_path = out_dir / "metrics_summary.csv"
-    case_path = out_dir / "case_overview.csv"
+    model_df = pd.DataFrame(extracted)
+    return model_df, skipped_missing_decision, skipped_missing_probability
 
-    df_preds_out.to_csv(preds_path, index=False)
-    df_pair_out.to_csv(pair_path, index=False)
-    df_sum_out.to_csv(sum_path, index=False)
-    df_case_out.to_csv(case_path, index=False)
 
-    print("Wrote:")
-    print(f"- {preds_path}")
-    print(f"- {pair_path}")
-    print(f"- {sum_path}")
-    print(f"- {case_path}")
+def compute_follow_rate(rows, chief_name="chief", panelists=DOCTOR_NAMES):
+    """
+    % ganger judge matcher panelist i når panelistene er uenige.
+    """
+    results = {}
 
-    # Lite “peek” i terminalen
-    if "follow_rate_disagreement" in df_sum_out.columns:
-        cols = ["role", "is_judge", "n_cases", "decision_rate_yes", "mean_p_yes",
-                "follow_rate_disagreement", "n_disagreement_cases", "mean_abs_prob_diff_disagreement",
-                "accuracy", "brier", "chief_mentions_rate"]
-        cols = [c for c in cols if c in df_sum_out.columns]
-        print("\nSummary preview:")
-        print(df_sum_out[cols].to_string(index=False))
+    for panelist in panelists:
+        match_count = 0
+        total_disagreement_cases = 0
+
+        for row in rows:
+            chief_decision = row.get("chief", {}).get("final_decision")
+            chief_bin = to_binary_label(chief_decision)
+            if chief_bin is None:
+                continue
+
+            panel_decisions = []
+            for p in panelists:
+                d = row.get("doctors", {}).get(p, {}).get("decision")
+                d_bin = to_binary_label(d)
+                if d_bin is not None:
+                    panel_decisions.append((p, d_bin))
+
+            if len(panel_decisions) < 2:
+                continue
+
+            decision_values = {d for _, d in panel_decisions}
+            disagreement = len(decision_values) > 1
+            if not disagreement:
+                continue
+
+            this_panelist = row.get("doctors", {}).get(panelist, {}).get("decision")
+            this_panelist_bin = to_binary_label(this_panelist)
+            if this_panelist_bin is None:
+                continue
+
+            total_disagreement_cases += 1
+            if chief_bin == this_panelist_bin:
+                match_count += 1
+
+        results[panelist] = {
+            "n_disagreement_cases": int(total_disagreement_cases),
+            "n_matches_with_chief": int(match_count),
+            "follow_rate": (
+                float(match_count / total_disagreement_cases)
+                if total_disagreement_cases > 0 else None
+            ),
+        }
+
+    return results
+
+
+def compute_probability_closeness(rows, panelists=DOCTOR_NAMES):
+    """
+    p_judge - p_panelist og absolutt differanse.
+    """
+    results = {}
+
+    for panelist in panelists:
+        signed_diffs = []
+        abs_diffs = []
+
+        for row in rows:
+            p_judge = safe_float(row.get("chief", {}).get("final_probability_yes"))
+            p_panel = safe_float(row.get("doctors", {}).get(panelist, {}).get("p_yes"))
+
+            if p_judge is None or p_panel is None:
+                continue
+
+            diff = p_judge - p_panel
+            signed_diffs.append(diff)
+            abs_diffs.append(abs(diff))
+
+        results[panelist] = {
+            "signed_diff_summary": summarize_scores(signed_diffs),
+            "abs_diff_summary": summarize_scores(abs_diffs),
+            "mean_signed_diff": float(np.mean(signed_diffs)) if signed_diffs else None,
+            "mean_abs_diff": float(np.mean(abs_diffs)) if abs_diffs else None,
+            "n": len(abs_diffs),
+        }
+
+    return results
+
+
+def compute_influence(rows, panelists=DOCTOR_NAMES):
+    counts = {p: 0 for p in panelists}
+    total_cases_with_list = 0
+
+    for row in rows:
+        influenced = row.get("chief", {}).get("which_panelists_influenced_me")
+        if not isinstance(influenced, list):
+            continue
+
+        total_cases_with_list += 1
+        for p in influenced:
+            if p in counts:
+                counts[p] += 1
+
+    rates = {}
+    for p in panelists:
+        rates[p] = {
+            "count": int(counts[p]),
+            "rate": float(counts[p] / total_cases_with_list) if total_cases_with_list > 0 else None,
+        }
+
+    return {
+        "n_cases_with_influence_list": int(total_cases_with_list),
+        "per_panelist": rates,
+    }
+
+
+def compute_contradiction_rate(rows, evaluators):
+    results = {}
+
+    for evaluator in evaluators:
+        flags = []
+
+        for row in rows:
+            if evaluator == "chief":
+                decision = row.get("chief", {}).get("final_decision")
+                p_yes = row.get("chief", {}).get("final_probability_yes")
+            else:
+                doctor = row.get("doctors", {}).get(evaluator, {})
+                decision = doctor.get("decision")
+                p_yes = doctor.get("p_yes")
+
+            flag = contradiction_flag(decision, p_yes)
+            if flag is not None:
+                flags.append(flag)
+
+        n = len(flags)
+        contradiction_count = int(sum(flags)) if n > 0 else 0
+
+        results[evaluator] = {
+            "n": n,
+            "contradiction_count": contradiction_count,
+            "contradiction_rate": float(contradiction_count / n) if n > 0 else None,
+        }
+
+    return results
+
+
+def compute_verbosity(rows, evaluators):
+    results = {}
+
+    for evaluator in evaluators:
+        raw_word_counts = []
+        section_counts = []
+
+        for row in rows:
+            if evaluator == "chief":
+                raw_text = row.get("chief", {}).get("raw")
+            else:
+                raw_text = row.get("doctors", {}).get(evaluator, {}).get("raw")
+
+            if not raw_text:
+                continue
+
+            raw_word_counts.append(extract_word_count(raw_text))
+            section_counts.append(len(extract_bullets_or_sections(raw_text)))
+
+        results[evaluator] = {
+            "raw_word_count_summary": summarize_scores(raw_word_counts),
+            "section_count_summary": summarize_scores(section_counts),
+            "n": len(raw_word_counts),
+        }
+
+    return results
+
+
+def compute_evidence_alignment(rows, evaluators):
+    """
+    Enkel versjon:
+    sjekker om evidence/evidence_cited-lignende felt finnes.
+    Hvis de ikke finnes i datastrukturen, får du 0 eller None.
+    """
+    evidence_field_names = {"evidence", "evidence_cited", "evidence_used", "citations"}
+    results = {}
+
+    for evaluator in evaluators:
+        total = 0
+        has_evidence_field = 0
+
+        for row in rows:
+            if evaluator == "chief":
+                obj = row.get("chief", {})
+            else:
+                obj = row.get("doctors", {}).get(evaluator, {})
+
+            if not isinstance(obj, dict):
+                continue
+
+            total += 1
+            if any(field in obj and obj.get(field) not in [None, "", []] for field in evidence_field_names):
+                has_evidence_field += 1
+
+        results[evaluator] = {
+            "n": int(total),
+            "n_with_evidence_field": int(has_evidence_field),
+            "evidence_alignment_rate": (
+                float(has_evidence_field / total) if total > 0 else None
+            ),
+        }
+
+    return results
+
+
+def compute_classification_for_all(rows, marksheet_df, target_col, n_bootstrap, stratify):
+    results = {}
+
+    for evaluator in ["chief"] + DOCTOR_NAMES:
+        extracted = []
+
+        for row in rows:
+            patient_id = str(row["patient_ID"]).strip()
+            decision = get_prediction(row, evaluator)
+            p_yes = get_probability_yes(row, evaluator)
+
+            if decision is None:
+                continue
+
+            extracted.append({
+                "patient_ID": patient_id,
+                "model_decision": str(decision).strip().upper(),
+                "model_p_yes": safe_float(p_yes),
+            })
+
+        model_df = pd.DataFrame(extracted)
+        if model_df.empty:
+            results[evaluator] = None
+            continue
+
+        df = marksheet_df.merge(model_df, on="patient_ID", how="inner")
+
+        y_true = df[target_col].map({"YES": 1, "NO": 0})
+        y_pred = df["model_decision"].map({"YES": 1, "NO": 0})
+
+        valid = y_true.notna() & y_pred.notna()
+        df = df[valid].copy()
+        y_true = y_true[valid].astype(int).values
+        y_pred = y_pred[valid].astype(int).values
+
+        if len(y_true) == 0:
+            results[evaluator] = None
+            continue
+
+        p_yes_series = df["model_p_yes"]
+        valid_prob = p_yes_series.notna()
+
+        p_yes = None
+        if valid_prob.sum() == len(df):
+            p_yes = p_yes_series.astype(float).values
+
+        results[evaluator] = bootstrap_metrics(
+            y_true=y_true,
+            y_pred=y_pred,
+            p_yes=p_yes,
+            n_bootstrap=n_bootstrap,
+            random_state=42,
+            stratify=stratify,
+        )
+
+    return results
+
+
+def main(jsonl_path, marksheet_path, target_col, n_bootstrap, stratify, output_path=None):
+    rows = load_jsonl(jsonl_path)
+
+    marksheet = pd.read_csv(marksheet_path)
+    marksheet.columns = marksheet.columns.str.strip()
+
+    if "patient_ID" not in marksheet.columns:
+        raise ValueError("CSV mangler kolonnen 'patient_ID'")
+    if target_col not in marksheet.columns:
+        raise ValueError(f"CSV mangler target-kolonnen '{target_col}'")
+
+    marksheet["patient_ID"] = marksheet["patient_ID"].astype(str).str.strip()
+    marksheet[target_col] = marksheet[target_col].astype(str).str.strip().str.upper()
+
+    classification_results = compute_classification_for_all(
+        rows=rows,
+        marksheet_df=marksheet,
+        target_col=target_col,
+        n_bootstrap=n_bootstrap,
+        stratify=stratify,
+    )
+
+    follow_rate = compute_follow_rate(rows)
+    probability_closeness = compute_probability_closeness(rows)
+    influence = compute_influence(rows)
+    contradiction_rate = compute_contradiction_rate(rows, ["chief"] + DOCTOR_NAMES)
+    verbosity = compute_verbosity(rows, ["chief"] + DOCTOR_NAMES)
+    evidence_alignment = compute_evidence_alignment(rows, ["chief"] + DOCTOR_NAMES)
+
+    final_output = {
+        "jsonl_path": str(jsonl_path),
+        "marksheet_path": str(marksheet_path),
+        "target_col": target_col,
+        "stratify": stratify,
+        "n_bootstrap": n_bootstrap,
+        "classification_metrics": classification_results,
+        "follow_rate_per_panelist": follow_rate,
+        "probability_closeness": probability_closeness,
+        "influence": influence,
+        "contradiction_rate": contradiction_rate,
+        "verbosity": verbosity,
+        "evidence_alignment": evidence_alignment,
+    }
+
+    print(json.dumps(final_output, indent=2, ensure_ascii=False))
+
+    if output_path is not None:
+        output_path = Path(output_path)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(output_path, "w", encoding="utf-8") as f:
+            json.dump(final_output, f, indent=2, ensure_ascii=False)
+        print(f"\nSaved results to: {output_path}")
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--jsonl", required=True, help="Path til merged JSONL-fil")
+    parser.add_argument("--marksheet", required=True, help="Path til CSV med fasit")
+    parser.add_argument(
+        "--target-col",
+        default="GP_fasit",
+        help="Kolonnen i CSV som inneholder fasit, default=GP_fasit",
+    )
+    parser.add_argument(
+        "--n-bootstrap",
+        type=int,
+        default=1000,
+        help="Antall bootstrap-runder",
+    )
+    parser.add_argument(
+        "--no-stratify",
+        action="store_true",
+        help="Skru av stratified bootstrap",
+    )
+    parser.add_argument(
+        "--output",
+        default=None,
+        help="Valgfri path til JSON-fil med metrics",
+    )
+
+    args = parser.parse_args()
+
+    main(
+        jsonl_path=Path(args.jsonl),
+        marksheet_path=Path(args.marksheet),
+        target_col=args.target_col,
+        n_bootstrap=args.n_bootstrap,
+        stratify=not args.no_stratify,
+        output_path=args.output,
+    )

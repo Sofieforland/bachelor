@@ -11,8 +11,6 @@ from pipeline.runner_chief import run_chief_file
 
 BASE_DIR = Path.home() / "Bachelor" / "BachelorProject" / "bachelor"
 
-IN_PATH = BASE_DIR / "outputs" / "Merged" / "medgemma_GPs.jsonl"
-
 
 def main():
     parser = argparse.ArgumentParser(description="Run chief on merged panel outputs")
@@ -20,6 +18,8 @@ def main():
     parser.add_argument("--n_rows", type=int, default=None, help="How many rows to run (default: all)")
     parser.add_argument("--append", action="store_true")
     args = parser.parse_args()
+
+    IN_PATH = BASE_DIR / "outputs" / "Merged" / f"{args.model}_GPs.jsonl"
 
     if args.model == "qwen":
         model_id = "Qwen/Qwen3-VL-8B-Instruct"
@@ -33,13 +33,21 @@ def main():
 
     out_jsonl = BASE_DIR / "outputs" / f"chief_outputs_{args.model}.jsonl"
 
+    # run_chief_file(
+    #     model=model,
+    #     in_path=IN_PATH,
+    #     out_path=out_jsonl,
+    #     append_jsonl=args.append,
+    #     n_rows=args.n_rows,
+    # )
+
     run_chief_file(
-        model=model,
-        in_path=IN_PATH,
-        out_path=out_jsonl,
-        append_jsonl=args.append,
-        n_rows=args.n_rows,
-    )
+    model=model,
+    in_path=Path("outputs/Merged/llama_GPs.jsonl"),
+    out_path=Path("outputs/No_reputation_chiefs/chief_outputs_llama.jsonl"),
+    append_jsonl=True,
+)
+
 
 
 if __name__ == "__main__":

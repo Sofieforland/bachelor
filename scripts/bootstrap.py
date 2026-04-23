@@ -67,7 +67,7 @@ def bootstrap_metrics(y_true, y_pred, n_bootstrap=1000, random_state=42, stratif
 
 
 # 1. Les CSV med GP_fasit
-marksheet = pd.read_csv("outputs/filtered_pasients.csv")
+marksheet = pd.read_csv("outputs/Dataset/filtered_pasients.csv")
 
 # sørg for samme format
 marksheet["patient_ID"] = marksheet["patient_ID"].astype(str).str.strip()
@@ -76,7 +76,7 @@ marksheet["GP_fasit"] = marksheet["GP_fasit"].astype(str).str.strip().str.upper(
 # 2. Les JSONL med modellresultater
 rows = []
 skipped_empty = 0
-with open("outputs/GP_neutral/dataset_with_medgemma_outputs.jsonl", "r", encoding="utf-8") as f:
+with open("outputs/No_reputation_chiefs/chief_outputs_llama.jsonl", "r", encoding="utf-8") as f:
     for line in f:
         line = line.strip()
         if not line:
@@ -85,7 +85,7 @@ with open("outputs/GP_neutral/dataset_with_medgemma_outputs.jsonl", "r", encodin
         obj = json.loads(line)
 
         patient_id = str(obj["patient_ID"]).strip()
-        decision = obj.get("doctors", {}).get("neutral_gp", {}).get("decision")
+        decision = obj.get("doctors", {}).get("chief", {}).get("decision")
 
         if decision is None:
             skipped_empty += 1

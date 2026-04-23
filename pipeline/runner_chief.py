@@ -5,6 +5,7 @@ import torch
 
 from pipeline.prompts import DOCTORS_GP
 
+
 def extract_json(text: str) -> dict:
     text = text.strip()
 
@@ -22,6 +23,7 @@ def extract_json(text: str) -> dict:
 
     return json.loads(text)
 
+
 def validate_chief(chief_obj: dict, patient_id=None):
     dec = chief_obj.get("final_decision")
     p = chief_obj.get("final_probability_yes")
@@ -35,6 +37,7 @@ def validate_chief(chief_obj: dict, patient_id=None):
 
     if not isinstance(panelists, list):
         print(f"Invalid panelist list for patient {patient_id}: {panelists}")
+
 
 def validate_doctors(doctors: dict, patient_id=None):
     for name, d in doctors.items():
@@ -61,16 +64,37 @@ def load_jsonl(path: Path):
     return rows
 
 
+def load_existing_patient_ids(path: Path):
+    existing_ids = set()
+
+    if not path.exists():
+        return existing_ids
+
+    with open(path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+                patient_id = obj.get("patient_ID")
+                if patient_id is not None:
+                    existing_ids.add(patient_id)
+            except Exception:
+                continue
+
+    return existing_ids
+
+
 def build_chief_user_prompt(record: dict) -> str:
     doctors = record.get("doctors", {})
     full_doctors = {}
 
-    #oppdater reputations her! 
-    #llama
+    # oppdater reputations her!
     REPUTATION_CONFIG = {
-        "cautious_gp": 0, 
-        "conservative_gp": 0,
-        "neutral_gp": 0,
+        "cautious_gp": 0,
+        "conservative_gp": 1,
+        "neutral_gp": 1,
         "overconfident_gp": 1
     }
 
@@ -108,12 +132,20 @@ def run_chief_file(
     rows = load_jsonl(in_path)[:n_rows] if n_rows is not None else load_jsonl(in_path)
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
+
     if not append_jsonl:
         with open(out_path, "w", encoding="utf-8") as f:
             pass
 
+    existing_ids = load_existing_patient_ids(out_path)
+    print(f"Found {len(existing_ids)} existing patients in {out_path}")
+
     for i, record in enumerate(rows):
         patient_id = record.get("patient_ID")
+
+        if patient_id in existing_ids:
+            print(f"Skipping patient {patient_id} ({i+1}/{len(rows)}) - already exists")
+            continue
 
         try:
             validate_doctors(record.get("doctors", {}), patient_id)
@@ -136,7 +168,6 @@ def run_chief_file(
                 }
                 validate_chief(chief_obj, patient_id)
 
-            # 🔥 Lag en ren output (anbefalt)
             output_record = {
                 "patient_ID": record.get("patient_ID"),
                 "label": record.get("label"),
